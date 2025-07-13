@@ -1,8 +1,10 @@
-import ee
 ee.Authenticate()
 ee.Initialize(project='my-project-dissertation-464420')
 
+import ee
 import folium # For interactive mapping in a Jupyter/Colab environment
+import ipywidgets as widgets
+from ipyleaflet import Map, TileLayer, WidgetControl, LayersControl
 
 # Initialize Earth Engine (assuming it's already initialized in a previous cell with a project)
 # The previous cell successfully initialized Earth Engine, so we don't need to do it again here.
@@ -166,7 +168,8 @@ annual_median_ndvi_images_list = years_list.map(compute_annual_median_ndvi)
 
 # NEW DEBUGGING: Evaluate the lists before creating the dictionary
 # In Python, we use .getInfo() to evaluate. This is a synchronous call.
-keys = years_list.map(lambda year: ee.String(year)).getInfo()
+# Ensure keys are consistent strings (e.g., '2008', '2009', etc.)
+keys = years_list.map(lambda year: ee.String(ee.Number(year).format('%d'))).getInfo()
 if not keys:
     print('Error evaluating yearsList keys: Keys list is empty or evaluation failed.')
 else:
@@ -183,8 +186,9 @@ else:
         # Only proceed to create the dictionary and the next loop if evaluations succeed
         if len(keys) == len(images) and len(keys) == (end_year - start_year + 1):
             # Create ee.Dictionary from ee.List objects
+            # Use the consistently formatted string keys
             annual_median_ndvi_images = ee.Dictionary.fromLists(
-              years_list.map(lambda year: ee.String(year)), # Keys as ee.String
+              years_list.map(lambda year: ee.String(ee.Number(year).format('%d'))), # Keys as ee.String (e.g., '2008')
               annual_median_ndvi_images_list # Values as ee.Image
             )
 
@@ -209,6 +213,7 @@ else:
                     current_year2 = i + 1
 
                     # Cast to ee.Image as .get() returns an ee.Object
+                    # Use consistent string keys
                     ndvi_year1 = ee.Image(annual_median_ndvi_images.get(str(current_year1)))
                     ndvi_year2 = ee.Image(annual_median_ndvi_images.get(str(current_year2)))
 
@@ -225,9 +230,7 @@ else:
                     # Add this annotated difference image to the list
                     ndvi_difference_images_list = ndvi_difference_images_list.add(ndvi_difference)
 
-                print('NDVI Difference Images List (server-side):', ndvi_difference_images_list.getInfo())
-
-                # --- Step 3: Evaluate the List and Add Layers Client-Side ---
+                # Evaluate the list of difference images once after the loop
                 client_list_diff_images = ndvi_difference_images_list.getInfo() # Evaluate here
                 if not client_list_diff_images:
                     print('*** List (ERROR) Details for Difference Images: ***')
@@ -246,6 +249,7 @@ else:
 
                     for image_properties in client_list_diff_images:
                         # Ensure image_properties and image_properties['id'] are valid before proceeding
+                        # Access 'id' at the top level of the dictionary
                         if not image_properties or 'id' not in image_properties:
                             print('Skipping layer: Invalid image properties or ID for a difference image.')
                             continue
@@ -316,4 +320,54 @@ folium.TileLayer(
 
 folium.LayerControl().add_to(m_overall)
 display(m_overall)
+tile_urls = {}
+for y in range(start_year, end_year + 1):
+    # Use consistent string key format
+    y_key = str(y)
+    # Get EE image for the year
+    # Use consistent string key format
+    ee_img = ee.Image(annual_median_ndvi_images.get(y_key))
+    # Get tile URL for folium/ipyleaflet
+    try:
+        map_id = ee_img.getMapId(ndvi_vis)
+        tile_urls[y] = map_id['tile_fetcher'].url_format
+    except Exception as e:
+        print(f"Could not get tile URL for year {y}: {e}")
 
+# Step 2: Build the slider map
+years = sorted(tile_urls.keys())
+if years:
+    center = map_center  # Already computed earlier
+    m_slider = Map(center=center, zoom=10, scroll_wheel_zoom=True)
+
+    # Prepare layers for each year
+    tile_layers = {}
+    for year in years:
+        t = TileLayer(url=tile_urls[year], name=str(year), opacity=1 if year==years[0] else 0)
+        tile_layers[year] = t
+        m_slider.add_layer(t)
+
+    m_slider.add_control(LayersControl(position='topright'))
+
+    slider = widgets.IntSlider(
+        value=years[0],
+        min=years[0],
+        max=years[-1],
+        step=1,
+        description='Year:',
+        continuous_update=False
+    )
+
+    def on_year_change(change):
+        for y in years:
+            tile_layers[y].opacity = 1 if y == change['new'] else 0
+
+    slider.observe(on_year_change, names='value')
+    slider_control = WidgetControl(widget=slider, position='topright')
+    m_slider.add_control(slider_control)
+
+    display(m_slider)
+else:
+    print("No annual NDVI tile URLs available for slider map.")
+
+print('Script complete. Check the map for NDVI change layers and Console for debug messages.')
